@@ -16,7 +16,8 @@
 
 ## 安装依赖
 
-```bash
+```powsershell
+winget install "Gyan.FFmpeg"
 pip install -r requirements.txt
 ```
 
