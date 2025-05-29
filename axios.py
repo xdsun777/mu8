@@ -159,19 +159,11 @@ class Request:
 
 
 if __name__ == "__main__":
-    start = time.time()
+    pass
+    # start = time.time()
     # rs = Request(url='http://httpbin.org/get', method='GET')
     # print(rs.get('http://httpbin.org/get'))
     # 上下两种方式等价
     # rs = Request.get('http://www.baidu.com')
     # print(rs.text)
-    cookies = {
-        "starstruck_d3e123bf01ade4aa9f91314f509efadf": "312d180a09271f6c38bdab640c1abbfd",
-        "UGVyc2lzdFN0b3JhZ2U": "%7B%7D",
-        "__PPU_puid": "16721746548958261472"
-    }
-    axios = Request()
-    rs = axios.get('https://www.movieffm.net/drama/338824/',cookies=cookies)
-    print(rs.text)
-    #
     # print(time.time() - start)

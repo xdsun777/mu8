@@ -202,7 +202,7 @@ class Downloader:
 
                 file_info['file_name'] = os.path.join(self.out_dir, file_info['file_name'])
                 if os.path.exists(file_info['file_name']):
-                    file_info['file_name'] = time.strftime("%H%M%S") + file_info['file_name']
+                    file_info['file_name'] = os.path.abspath(time.strftime("%H%M%S") + os.path.basename(file_info['file_name']))
                 return file_info
             else:
                 logging.info(f"获取文件信息失败: {response.status_code}")
@@ -229,8 +229,6 @@ class Downloader:
             # if detected_encoding:
             #     response.encoding = detected_encoding
             response.encoding = response.apparent_encoding
-            with open('./test.html','wb') as f:
-                f.write(response.content)
             soup = BeautifulSoup(response.text, 'html.parser')
             base_url = url.rsplit('/', 1)[0] + '/'
             links = set()
@@ -651,7 +649,7 @@ class Downloader:
                             'bandwidth': bandwidth,
                             'url': next_line
                         })
-                        print(f"找到 M3U8 链接: {next_line}, 带宽: {bandwidth}")
+                        logging.info(f"找到 M3U8 链接: {next_line}, 带宽: {bandwidth}")
                 elif line.startswith('#EXTINF'):
                     segment_url = lines[i + 1]
                     if not segment_url.startswith(('http://', 'https://')):
@@ -661,7 +659,7 @@ class Downloader:
                 # 按带宽从大到小排序，选择画质最高的链接
                 highest_quality_stream = max(stream_infs, key=lambda x: x['bandwidth'])
                 highest_quality_url = highest_quality_stream['url']
-                print(f"选择最高画质 M3U8 链接: {highest_quality_url}")
+                logging.info(f"选择最高画质 M3U8 链接: {highest_quality_url}")
                 # 递归解析最高画质的 M3U8 文件
                 return self.m3u8_parse(highest_quality_url)
             return {
@@ -826,4 +824,4 @@ def main():
 if __name__ == "__main__":
     s = time.time()
     main()
-    print("程序运行时间: {:.10f} 秒".format(time.time() - s))
+    logging.info("程序运行时间: {:.10f} 秒".format(time.time() - s))
