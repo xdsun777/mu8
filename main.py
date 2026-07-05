@@ -83,9 +83,9 @@ class Downloader:
 
     def __init__(self,out_dir=None,threads: int=None, chunk_size: int=None,goon: bool=False):
         self.out_dir = os.path.abspath(out_dir) if out_dir else os.path.abspath('./temp_download')
-        self.threads = min(threads,os.cpu_count()//2,16)
-        self.chunk_size = chunk_size if chunk_size else 1024*1024*500
-        self.goon = False # 续点继传控制参数
+        self.threads = min(threads, os.cpu_count()//2, 16) if threads is not None else min(os.cpu_count()//2, 16)
+        self.chunk_size = chunk_size if chunk_size else 1024*500
+        self.goon = goon  # 续点继传控制参数
 
         self.lock = threading.Lock()
 
@@ -130,7 +130,7 @@ class Downloader:
                 return '.m4a'
             elif first_chunk.startswith(b'ID3'):  # MP3
                 return '.mp3'
-            elif first_chunk.startswith(b'PK\x03\x04'):  # ZIP
+            elif first_chunk.startswith(b'PK\x03\x04'):  # ZIP / APK / DOCX 等
                 return '.zip'
             elif first_chunk.startswith(b'Rar!\x1a\x07\x00'):  # RAR
                 return '.rar'
@@ -142,11 +142,7 @@ class Downloader:
                 return '.bz2'
             elif first_chunk.startswith(b'\x00\x00\x00\x14ftypM4S '):  # M4S
                 return '.m4s'
-            elif first_chunk.startswith(b'PK\x05\x06'):  # APK
-                return '.apk'
-            elif first_chunk.startswith(b'PK\x03\x04'):  # APK
-                return '.apk'
-            elif first_chunk.startswith(b'MZP'):
+            elif first_chunk.startswith(b'MZ'):  # Windows PE (EXE/DLL)
                 return '.exe'
             else:
                 # logging.info(f"判断文件真实类型: {first_chunk}")
@@ -187,15 +183,20 @@ class Downloader:
                 url_content_type = self.read_url_header_content(url)
                 if url_content_type:
                     file_info['file_type'] = url_content_type
-                f_name = re.sub(r'[\\/*?:"<>|]', '', os.path.basename(url)).strip()
+                f_name = re.sub(r'[\\/*?:"<>|]', '', os.path.basename(url.split('?')[0])).strip()
+                file_type = file_info['file_type']
                 # f_name存在且!=''
                 if f_name and f_name !='':
-                    if f_name.endswith(file_info['file_type']):
+                    if file_type and f_name.endswith(file_type):
                         file_info['file_name'] = f_name
+                    elif file_type:
+                        file_info['file_name'] = f_name + file_type
                     else:
-                        file_info['file_name'] = f_name + url_content_type
+                        file_info['file_name'] = f_name
                 else:# f_name不存在或=''
-                    f_name = re.sub(r'[\\/*?:"<>|]', '', re.split('/', url)[2]) + time.strftime("H%M%S")+file_info['file_type']
+                    f_name = re.sub(r'[\\/*?:"<>|]', '', re.split('/', url.split('?')[0])[2]) + time.strftime("H%M%S")
+                    if file_type:
+                        f_name += file_type
                     file_info['file_name'] = f_name
                 if os.path.exists(file_info['file_name']) and self.goon is False:
                     file_info['file_name'] = time.strftime("%M%S") + file_info['file_name']
@@ -304,7 +305,7 @@ class Downloader:
         # logging.info("选择流式下载")
         try:
             # 发送 GET 请求，开启流式下载
-            with requests.get(url, stream=True) as response:
+            with axios.get(url, stream=True) as response:
                 # 获取文件总大小，若响应头中无 Content-Length 字段则默认 0
                 total_size = int(response.headers.get('Content-Length', 0))
                 # 初始化进度条
@@ -346,7 +347,7 @@ class Downloader:
         # logging.info("选择多线程流式下载")
         try:
             # 发送 HEAD 请求获取文件信息
-            head_response = requests.head(url)
+            head_response = axios.head(url)
             head_response.raise_for_status()
             file_size = int(head_response.headers.get('Content-Length', 0))
             if 'bytes' not in head_response.headers.get('Accept-Ranges', ''):
@@ -413,7 +414,7 @@ class Downloader:
         """
         headers = {'Range': f'bytes={start}-{end}'}
         try:
-            with requests.get(url, headers=headers, stream=True) as response:
+            with axios.get(url, headers=headers, stream=True) as response:
                 response.raise_for_status()
                 data_chunks = []
                 for chunk in response.iter_content(chunk_size=self.chunk_size):
@@ -461,9 +462,9 @@ class Downloader:
         """
         # logging.info(f"调用下载 m3u8 文件:{file_info}")
         file_url,file_name,file_type = file_info.get('url'),file_info.get('file_name'),file_info.get('file_type')
-        save_path = file_name+'.ts'
+        save_path = os.path.splitext(file_name)[0] + '.ts'
         if os.path.exists(save_path):
-            save_path = os.path.splitext(save_path)[0]+ time.strftime("%H%M%S") +'.ts'
+            save_path = os.path.splitext(file_name)[0] + time.strftime("%H%M%S") + '.ts'
         ts_list_file = os.path.join(self.out_dir,'ts_list.txt')
         ts_list = None
         if os.path.exists(ts_list_file):
@@ -496,23 +497,25 @@ class Downloader:
             ts_data = self.ts_download_de(segment, key_method, key_uri, key_iv)
             if ts_data:
                 ts_queue.put((index, ts_data))
+            else:
+                ts_queue.put((index, None))  # 下载失败，放入哨兵防止死锁
 
         def write_ts_data():
             """按顺序从队列中取出 TS 片段并写入文件"""
             expected_index = 0
             with open(save_path, 'wb') as outfile:
-                while True:
-                    if not ts_queue.empty():
-                        index, ts_data = ts_queue.get()
-                        if index == expected_index:
-                            with write_lock:
-                                outfile.write(ts_data)
-                            expected_index += 1
-                            progress_bar.update(1)
-                            if expected_index == len(segments):
-                                break
-                        else:
-                            ts_queue.put((index, ts_data))
+                while expected_index < len(segments):
+                    index, ts_data = ts_queue.get()
+                    if index == expected_index:
+                        if ts_data is None:
+                            logging.error(f"TS 片段 {expected_index} 下载失败，终止合并")
+                            break
+                        with write_lock:
+                            outfile.write(ts_data)
+                        expected_index += 1
+                        progress_bar.update(1)
+                    else:
+                        ts_queue.put((index, ts_data))
 
         # 启动写入线程
         write_thread = threading.Thread(target=write_ts_data)
@@ -534,7 +537,7 @@ class Downloader:
         logging.info(f"m3u8 视频下载完成，保存路径: {save_path}")
 
 
-    def ts_download_de(self,segment:str,key_method:str,key_uri:str,key_iv:str):
+    def ts_download_de(self, segment: str, key_method: str, key_uri: str, key_iv: str):
         """
         下载 ts 文件。
         功能：
@@ -550,7 +553,7 @@ class Downloader:
         # logging.info(f"调用下载 ts 文件:{segment}")
         file_name = os.path.join(self.out_dir,segment.split('/')[-1])
         retries = 0
-        max_retries = 3
+        max_retries = 2
         key = None
         if key_method and key_method.upper() == 'AES-128' and key_uri:
             try:
@@ -559,7 +562,7 @@ class Downloader:
                 key = key_response.content
                 if key_iv and key_iv.startswith('0x'):
                     key_iv = bytes.fromhex(key_iv[2:])
-            except requests.exceptions.RequestException as e:
+            except axiosError as e:
                 logging.error(f"获取加密密钥失败: {e}")
                 return None
         while retries < max_retries:
@@ -598,7 +601,7 @@ class Downloader:
             except axiosError as e:
                 logging.error(f"下载 TS 文件 {segment} 时发生错误: {e}")
                 retries += 1
-                time.sleep(1)
+                time.sleep(0.5)
         logging.error(f"下载 {segment} 失败，已达到最大重试次数 {max_retries}")
         return None
 
@@ -695,7 +698,7 @@ class Downloader:
 
         if file_info['file_type'] == '.html':
             meta_links_set = self.html_parse(url)
-            if meta_links_set:
+            if not meta_links_set:
                 logging.info(f"未从{url}获取到媒体文件")
             for meta_link in meta_links_set:
                 self.download(meta_link)

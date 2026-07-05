@@ -39,7 +39,7 @@ class AxiosError(Exception):
 class Config:
     # 定义多个 User-Agent，用于动态更换
     _USER_AGENTS = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0",
@@ -97,12 +97,12 @@ class Config:
 
 class Request:
     _retry = Retry(
-        total=10,  # 最大重试次数
-        connect=6,  # 连接失败时的重试次数
-        read=5,  # 读取失败时的重试次数
+        total=5,  # 最大重试次数
+        connect=3,  # 连接失败时的重试次数
+        read=3,  # 读取失败时的重试次数
         redirect=3,  # 重定向的最大次数
-        status_forcelist=[500, 502, 503, 504],  # 需要重试的 HTTP 状态码
-        backoff_factor=0.5  # 重试间隔的退避因子
+        status_forcelist=[429, 500, 502, 503, 504],  # 需要重试的 HTTP 状态码
+        backoff_factor=0.3  # 重试间隔的退避因子
     )
     # 配置适配器
     _adapter = HTTPAdapter(
@@ -126,7 +126,7 @@ class Request:
         self.url = url
         self.method = method
         self.args = args
-        self.kwargs = kwargs #// Path: react-ts-playground/src/components/Button/Button.stories.tsx
+        self.kwargs = kwargs
     def __call__(self, *args, **kwargs):
         return self.__class__._request(self.method,self.url, *args, **kwargs)
 
@@ -138,13 +138,16 @@ class Request:
     @classmethod
     def _request(cls, method, url, *args, **kwargs):
         kwargs.setdefault("timeout", (5, 15))
-        match method:
-            case 'HEAD':
-                return cls.head(url, *args, **kwargs)
-            case 'POST':
-                return cls.post(url, *args, **kwargs)
-            case _:
-                return cls.get(url, *args, **kwargs)
+        try:
+            match method:
+                case 'HEAD':
+                    return cls.head(url, *args, **kwargs)
+                case 'POST':
+                    return cls.post(url, *args, **kwargs)
+                case _:
+                    return cls.get(url, *args, **kwargs)
+        except requests.exceptions.RequestException as e:
+            raise AxiosError(str(e), status_code=getattr(e.response, 'status_code', None)) from e
 
 
     @classmethod
