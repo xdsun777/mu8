@@ -220,9 +220,11 @@ impl Downloader {
                 }
             }
 
-            // 通过文件头魔数修正类型
-            if let Some(magic_type) = self.read_url_header_content(url).await {
-                file_info.file_type = Some(magic_type);
+            // 通过文件头魔数修正类型（仅在 Content-Type 未匹配时使用）
+            if file_info.file_type.is_none() {
+                if let Some(magic_type) = self.read_url_header_content(url).await {
+                    file_info.file_type = Some(magic_type);
+                }
             }
 
             // 生成文件名
@@ -486,10 +488,6 @@ impl Downloader {
         }
 
         // 预分配文件
-        if let Err(e) = std::fs::write(file_name, vec![0u8; 0]) {
-            log::error!("创建文件失败: {}", e);
-            return;
-        }
         if let Err(e) = std::fs::File::create(file_name)
             .and_then(|f| f.set_len(file_size))
         {
@@ -878,36 +876,25 @@ async fn ts_download_de(
     for retry in 0..=MAX_RETRIES {
         match client.get(segment).send().await {
             Ok(resp) => {
-                match resp.bytes().await {
-                    Ok(data) => {
-                        // AES-128-CBC 解密
-                        if let Some(ref k) = key {
-                            let iv = iv_bytes.unwrap_or([0u8; 16]);
-                            let decrypted = match aes_cbc_decrypt(&data, k, &iv) {
-                                Some(d) => d,
-                                None => {
-                                    log::warn!("{} 解密失败", segment);
-                                    return None;
-                                }
-                            };
-
-                            // 验证 TS 同步字节
+                let status = resp.status().as_u16();
+                if status != 200 {
+                    log::error!("下载 TS 文件 {} HTTP {} ", segment, status);
+                    // 进入重试
+                } else {
+                    // 流式下载 + 分块解密（对应 Python iter_content 方式）
+                    let result = stream_download_and_decrypt(
+                        resp, &key, &iv_bytes).await;
+                    match result {
+                        Ok(decrypted) => {
                             if decrypted.is_empty() || decrypted[0] != 0x47 {
                                 log::warn!("{} 不是有效的 TS 数据流", segment);
                                 return None;
                             }
                             return Some(decrypted);
-                        } else {
-                            // 无加密
-                            if data.is_empty() || data[0] != 0x47 {
-                                log::warn!("{} 不是有效的 TS 数据流", segment);
-                                return None;
-                            }
-                            return Some(data.to_vec());
                         }
-                    }
-                    Err(e) => {
-                        log::error!("下载 TS 文件 {} 时发生错误: {}", segment, e);
+                        Err(e) => {
+                            log::error!("下载 TS 文件 {} 时发生错误: {}", segment, e);
+                        }
                     }
                 }
             }
@@ -926,32 +913,95 @@ async fn ts_download_de(
 }
 
 // ============================================================
-// AES-128-CBC 手动解密
+// AES-128-CBC 状态化解密器（支持分块流式解密）
 // ============================================================
-fn aes_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8; 16]) -> Option<Vec<u8>> {
-    if key.len() != 16 || data.len() % 16 != 0 {
-        return None;
-    }
+struct CbcDecryptor {
+    cipher: Aes128,
+    prev_ct: [u8; 16],
+}
 
-    let mut key_arr = [0u8; 16];
-    key_arr.copy_from_slice(key);
-
-    let cipher = Aes128::new(GenericArray::from_slice(&key_arr));
-    let mut result = Vec::with_capacity(data.len());
-    let mut prev_ct = *iv;
-
-    for chunk in data.chunks(16) {
-        let mut block = GenericArray::clone_from_slice(chunk);
-        cipher.decrypt_block(&mut block);
-
-        // CBC: XOR with previous ciphertext
-        for (b, p) in block.iter_mut().zip(prev_ct.iter()) {
-            *b ^= p;
+impl CbcDecryptor {
+    fn new(key: &[u8; 16], iv: &[u8; 16]) -> Self {
+        let cipher = Aes128::new(GenericArray::from_slice(key));
+        CbcDecryptor {
+            cipher,
+            prev_ct: *iv,
         }
-
-        result.extend_from_slice(&block);
-        prev_ct.copy_from_slice(chunk);
     }
 
-    Some(result)
+    /// 解密一块数据（长度必须是 16 的倍数），保持 CBC 状态跨调用
+    fn decrypt(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut result = Vec::with_capacity(data.len());
+        for chunk in data.chunks(16) {
+            let mut block = GenericArray::clone_from_slice(chunk);
+            self.cipher.decrypt_block(&mut block);
+            for (b, p) in block.iter_mut().zip(self.prev_ct.iter()) {
+                *b ^= p;
+            }
+            result.extend_from_slice(&block);
+            self.prev_ct.copy_from_slice(chunk);
+        }
+        result
+    }
+}
+
+// ============================================================
+// 流式下载 + 分块解密
+// ============================================================
+async fn stream_download_and_decrypt(
+    resp: reqwest::Response,
+    key: &Option<Vec<u8>>,
+    iv_bytes: &Option<[u8; 16]>,
+) -> Result<Vec<u8>, reqwest::Error> {
+    use futures::StreamExt;
+
+    let mut stream = resp.bytes_stream();
+    let mut result = Vec::new();
+
+    if let Some(k) = key {
+        // 加密流：状态化分块解密
+        let iv = iv_bytes.unwrap_or([0u8; 16]);
+        let mut decryptor = CbcDecryptor::new(
+            k.as_slice().try_into().unwrap(),
+            &iv,
+        );
+        let mut buf = Vec::new(); // 缓存不足 16 字节的尾部
+        let mut first = true;
+
+        while let Some(chunk) = stream.next().await {
+            let data = chunk?;
+            buf.extend_from_slice(&data);
+
+            let aligned = (buf.len() / 16) * 16;
+            if aligned == 0 {
+                continue;
+            }
+
+            let decrypted = decryptor.decrypt(&buf[..aligned]);
+            if first {
+                if decrypted.is_empty() || decrypted[0] != 0x47 {
+                    // 解密后第一字节不是 TS 同步头 → 解密失败
+                    return Ok(Vec::new()); // 由调用者处理
+                }
+                first = false;
+            }
+            result.extend_from_slice(&decrypted);
+            buf.drain(..aligned);
+        }
+    } else {
+        // 无加密：直接流式收集
+        let mut first = true;
+        while let Some(chunk) = stream.next().await {
+            let data = chunk?;
+            if first {
+                if data.is_empty() || data[0] != 0x47 {
+                    return Ok(Vec::new());
+                }
+                first = false;
+            }
+            result.extend_from_slice(&data);
+        }
+    }
+
+    Ok(result)
 }

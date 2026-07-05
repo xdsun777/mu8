@@ -5,7 +5,7 @@ edition = "2021"
 description = "文件下载器 - 支持 M3U8/TS 流媒体下载、多线程分片下载、TS 转 MP4"
 
 [dependencies]
-reqwest = { version = "0.12", features = ["stream", "cookies"] }
+reqwest = { version = "0.12", features = ["stream", "cookies", "gzip", "brotli"] }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 regex = "1"
