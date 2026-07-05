@@ -1,0 +1,23 @@
+[package]
+name = "mu8"
+version = "0.1.0"
+edition = "2021"
+description = "文件下载器 - 支持 M3U8/TS 流媒体下载、多线程分片下载、TS 转 MP4"
+
+[dependencies]
+reqwest = { version = "0.12", features = ["stream", "cookies"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+scraper = "0.20"
+indicatif = "0.17"
+aes = "0.8"
+num_cpus = "1"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+url = "2"
+rand = "0.8"
+hex = "0.4"
+chrono = "0.4"
+futures = "0.3"
